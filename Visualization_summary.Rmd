@@ -1,0 +1,288 @@
+---
+title: "Visualizing and summarizing spatial data"
+author: "Bharti Dharapuram"
+date: "2023-09-22"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Objectives
+
+In this tutorial, we will use the example of a centipede dataset to learn how to:
+
+1. load data
+2. plot different types of spatial objects
+3. derive data summaries
+
+We will primarily be working with the packages `sf` and `terra` to handle spatial data, use the package `dplyr` for data manipulation and `ggplot2` for visualization with a little help from `tidyterra` and `ggpubr`.
+
+# Setup
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Call the required R libraries
+
+```{r}
+library(sf)
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(tidyterra)
+library(ggpubr)
+```
+
+---
+
+# 1. Input spatial data
+
+## 1.1. Coastline
+
+The function `st_read` (st_ stands for spatial type ) from the package `sf` is used to read in [simple features](https://en.wikipedia.org/wiki/Simple_Features) or layers from file. `sf` stands for 'simple features', which allows us to store and access geographic features such as points, lines, polygons etc. These features consist of spatial information and can have additional attribute data associated with them.
+
+```{r}
+coast<-st_read('data/ne_10m_coastline/ne_10m_coastline.shp')
+```
+
+The coastline shapefile of the world was obtained from [Natural Earth](https://www.naturalearthdata.com/). `coast` is a simple feature collection of `LINESTRING` geometries, which consists of 4130 features (rows) and two fields (scalerank, featureclass). `LINESTRING` is a one-dimensional sequence of points, which do not intersect. More on different kinds of geometries [here](https://r-spatial.github.io/sf/articles/sf1.html#simple-feature-geometry-types).
+
+```{r}
+class(coast) #class of the object is sf, data.frame
+head(coast) #it gives the information related to the sf object
+coast[1,3]
+```
+
+`coast` is an simple feature `data.frame` (referred to as `sf`), which consists of attributes in the usual `data.frame` format and an additional column defining geometries. Here, each row is a simple feature and the column named 'geometry' is the list column holding the geometry information (referred to as `sfc`). For a simple feature, each entry in the geometry column is a simple feature geometry (referred to as `sfg`).
+
+```{r}
+#two other functions to look at data and data types that may be useful
+#View(coast) #looking at the entire contents of the sf object
+#st_geometry_type(coast) #gives the geometry type corresponding to each row of the data
+```
+
+```{r}
+st_crs(coast)
+```
+
+Functions in `sf` used to run spatial operations have the prefix `st_`, which stands for 'spatial type'. `st_crs` is used to obtain information regarding the coordinate reference system (CRS) of an `sf` object. Coordinate reference systems can be described in [many different formats](https://www.earthdatascience.org/courses/use-data-open-source-python/intro-vector-data-python/spatial-data-vector-shapefiles/epsg-proj4-coordinate-reference-system-formats-python/#:~:text=The%20CRS%20for%20your%20data,or%20broken%20up%20by%20a%20%2C%20.). Here, the CRS information is provided in the WKT (well known text) format. The various parameters separated by `,` are declared in capitalized headings and their description is specified within `[]`.
+
+The EPSG (European Petroleum Survey Group) format uses a short four-five digit code to refer to a CRS. Proj.4 strings contain information regarding the projection, datum, units and ellipsoid in a concise format.
+
+```{r}
+plot(coast)
+```
+
+When plotting the object, there are two maps displayed based on the values in the two attribute columns. `scalerank` is used to filter which features are displayed on a map at different zoom levels, and `featurecla` is used to define the type of the object (here all `LINESTRINGS` have the value "Coastline"). We can plot just the geometry as below, while ignoring the attributes as below -
+
+```{r}
+plot(st_geometry(coast))
+```
+
+**Similarly, let us load and explore the other spatial data objects, which will be used in this exercise.**
+
+## 1.2. Administrative boundary and protected areas of Kerala
+
+```{r}
+#load shape file of Kerala state from disk
+state<-st_read('data/kerala_state_boundary_6Jun22/kerala_state_boundary_6Jun22.shp')
+class(state)
+head(state)
+st_crs(state)
+plot(st_geometry(state))
+```
+
+The state boundary of Kerala was obtained from [Data{Meet}](projects.datameet.org/maps). `state` is a simple feature of the `POLYGON` geometry. It consists of only one feature (row) and one field (id). `POLYGON` is a two-dimensional simple feature consisting of a non-intersecting sequence of points that encloses an area. The CRS of `state` is WGS84, the same as `coast`.
+
+```{r}
+# load shape files of protected areas of Kerala from disk
+pa<-st_read('data/kerala_pa_6Jun22/kerala_pa_6Jun22.shp')
+class(pa)
+head(pa)
+st_crs(pa)
+plot(st_geometry(pa))
+```
+
+The protected area maps were obtained from [OpenStreetMap](openstreetmap.org) and combined together in [QGIS](qgis.org). `pa` is a simple feature of the `POLYGON` geometry. It consists of 20 features (rows) and two fields (id, pa). The CRS of `pa` is WGS84, same as the earlier spatial objects.
+
+## 1.3. Centipede occurrence data for the Indian subcontinent
+
+```{r}
+#load sampling locations of centipedes from disk
+pts<-st_read('data/gps_9Jun20.csv', options=c("X_POSSIBLE_NAMES=Longitude","Y_POSSIBLE_NAMES=Latitude"))
+```
+
+The occurrence data for centipedes (class: Chilopoda) from the subfamily Otostigminae for the Indian sub-continent was obtained from [Bharti et al., 2021](https://doi.org/10.1002/ece3.8119). The associated data can be accessed [here](https://doi.org/10.5061/dryad.hmgqnk9hp).
+
+While loading the points data from a csv file, we specify the column names containing the geometric information under the argument `options` so that the coordinates can be assigned to the simple feature list column.
+
+```{r}
+class(pts)
+head(pts)
+st_crs(pts)
+plot(st_geometry(pts))
+```
+
+`pts` is a simple feature of the `POINT` geometry. It consists of 188 features (rows) and five fields (Species.Name, Location, Latitude, Longitude, Genus). The CRS of `pts` is not specified within the data. Since we know the CRS in which the data are stored, we can assign it as follows -
+
+```{r}
+#assigning the CRS to the spatial object
+st_crs(pts)<-"WGS84"
+st_crs(pts)
+```
+Note that we are *not changing or reprojecting* the data, we are simply assigning the CRS label that we *know* is associated with the data.
+
+## 1.4. Elevation
+
+```{r}
+#load elevation data from WorldClim from disk
+elev<-terra::rast("data/wc2.1_30s_elev.tif")
+class(elev)
+crs(elev)
+plot(elev)
+```
+
+The elevation data at 1 km resolution is from [WorldClim](worldclim.org). The function `rast` from the package `terra` is used to load the raster. Raster data store continuous data, in our case a continuous range of elevation. The spatial extent is divided into cells, where each cell is assigned a certain data value. The class of `elev` is `SpatRaster` and its CRS is WGS84.
+
+---
+
+# 2. Preparing spatial data to make plots
+
+## 2.1. Crop extent
+
+Lets define the spatial extent that we are interested in, that is the area falling within Kerala. I have obtained this extent by simply looking up the min and max coordinates of Kerala on Google Maps.
+
+```{r}
+kerala.ext<-terra::ext(74.7,78,8,13) #arguments as xmin, xmax, ymin, ymax
+class(kerala.ext)
+```
+
+`kerala.ext` is a spatial object of the type `SpatExtent`. We crop the coastline data and elevation raster using this object. We will use the `st_crop` function from `sf` for cropping the simple feature, and `crop` from `terra` for cropping the elevation raster.
+
+```{r}
+coast<-st_crop(coast, kerala.ext) #crop simple feature line to the extent of Kerala defined above
+elev<-terra::crop(elev, kerala.ext) #crop the elevation raster to the same extent
+```
+
+## 2.2. Filter points
+
+Since the centipede occurrence data extend across the Indian sub-continent, we use points-in-polygon analysis to filter occurrences falling within the state boundary of Kerala defined by `state`.
+
+```{r}
+pts_kerala<-st_filter(pts, state) #filtering the points falling within the bounds of the state polygon
+nrow(pts)
+nrow(pts_kerala)
+```
+
+## 2.3. Plot all the spatial objects together to make a meaningful map
+
+Making a plot using `ggplot2` and `tidyterra`.
+```{r}
+#pdf(file="centipede_distribution_Kerala.pdf", height=11, width=8, useDingbats=FALSE)
+my.fill<-scale_fill_gradientn(name="Elevation (m)", colours=terrain.colors(10), na.value="transparent") #choose the fill palette for elevation data
+my.col<-scale_color_manual(name="Genus", labels=c("Digitipes", "Ethmostigmus", "Rhysida"), values=c("black", "blue", "dark red")) #colour points by genus name (information present in column name Genus)
+my.xscale<-scale_x_continuous(breaks=seq(74, 79, 1)) #define longitudinal bins
+my.yscale<-scale_y_continuous(breaks=seq(8, 13, 1)) #define latitudinal bins
+
+ggplot() +
+  geom_spatraster(data=elev) + #plot raster data
+  geom_sf(data=coast, fill=NA, col="black", linewidth=0.4) + #plot coastline
+  geom_sf(data=state, fill=NA, col="black", linewidth=0.4) + #plot the state boundary
+  geom_sf(data=pa,fill=NA, col="black", linewidth=0.4) + #plot the protected area polygons
+  geom_sf(data=pts_kerala, aes(col=Genus), size=2) + #geom_sf(data=pts_kerala, aes(col=Genus)) #plot centipede occurrence locations
+  my.fill +
+  my.col +
+  my.xscale +
+  my.yscale +
+  theme_bw()
+#dev.off()
+```
+
+Even simple `ggplot2` functions and arguments can be really difficult to remember on the top of the head. This [reference](https://ggplot2.tidyverse.org/reference/index.html) is a useful place to look up syntax and functions. I have also found [this resource](https://r-graph-gallery.com/ggplot2-package.html) very helpful for simple to complex plots. [ColorBrewer](https://colorbrewer2.org/) is a nice website to look up colour palettes for `ggplot` plotting applications.
+
+---
+
+# 3. Obtain data summaries combining different kinds of spatial data
+```{r}
+head(pts_kerala)
+head(pa)
+```
+
+
+## 3.1. Make a protected area (PA)-wise species list 
+```{r}
+species_pa<-st_join(pts_kerala, pa) %>% #add information of PAs to the centipede occurrence locations
+  filter(!is.na(pa)) %>% #filter out points that do not fall within any of the PA polygons
+  select(Species.Name, pa, Latitude, Longitude) %>% #select only a subset of the columns
+  rename(Protected.Area=pa) %>% #rename a column
+  distinct(Species.Name, Protected.Area) %>% #keep only unique combinations of species and PAs
+  arrange(Protected.Area)
+  
+species_pa
+```
+
+[This](https://bookdown.org/robinlovelace/geocompr/geometric-operations.html) resource describes several other useful geometric operations that can be performed between pairs of `sf` geometries using the `sf` package. [Here](https://r-spatial.github.io/sf/reference/geos_binary_pred.html) is the `sf` documentation for some of these functions.
+
+## 3.2. Plot the number of species detected within each PA against the number of locations sampled, and PA area
+
+### 3.2.1. First re-project the polygon to UTM
+
+[This](https://spatialreference.org/) is a useful website to look up CRS codes in different formats, which we have used to decide the projection.
+```{r}
+pa_proj<-st_transform(pa, crs="EPSG:32643") #Kerala falls under UTM zone 43 in the northern hemisphere, which can be specified using the EPSG code 32643
+pa_proj
+```
+
+### 3.2.2. Save the area in an area column in the `pa` object
+
+```{r}
+st_area(pa_proj) #the areas are given in meters square
+pa$area<-as.vector(st_area(pa_proj))/10^6 #saving the PA areas calculated above as a new column in the pa object
+pa$area
+```
+
+### 3.2.3. Join the `pts` object with information in the `pa` object and calculate species richness
+```{r}
+richness_pa<-st_join(pts_kerala, pa) %>% #add PA information to the occurrence data
+  as.data.frame() %>% #save this as a dataframe, losing the geometry information
+  filter(!is.na(pa)) %>% #filter out points falling outside PAs
+  group_by(pa) %>% #group data based on PA
+  summarise(species_unq=n_distinct(Species.Name), pts_unq=n_distinct(geometry), pa_area=first(area)) #calculate the number of unique species and sampling locations within each PA
+
+richness_pa
+```
+
+### 3.2.4. Make a plot of number of species against a. PA area and 2. number of locations sampled
+```{r}
+area_sp<-ggplot(richness_pa, aes(x=pa_area, y=species_unq)) + geom_point() + xlab("PA area (km sq)") + ylab("No. of unique species") + theme_bw() #plotting number of unique species detected against PA area
+
+pts_sp<-ggplot(richness_pa, aes(x=pts_unq, y=species_unq)) + geom_point() + xlab("No. of sampling locations") + ylab("No. of unique species") + theme_bw() #plotting number of unique species detected against number of unique points sampled within each PA
+
+ggarrange(area_sp, pts_sp) #arranging multiple ggplots on the same page
+```
+
+## 3.3. Find the elevational range and plot elevation distribution for each species
+
+```{r}
+extract(elev, pts_kerala) #we are interested in the elevation information in the second column
+pts_kerala$Elevation<-extract(elev, pts_kerala)[,2] #adding the required column to the occurrence data
+
+elev_range<-pts_kerala %>%
+  as.data.frame() %>% #remove the geometry attribute from the object, so that only data corresponding to distinct species is pulled out
+  group_by(Species.Name) %>% #group data by species name
+  mutate(min_elev=min(Elevation), max_elev=max(Elevation)) %>% #create new columns which have the mnimum and maximum elevation data for each species
+  select(Species.Name, min_elev, max_elev) %>%
+  distinct()
+
+elev_range
+```
+
+```{r}
+pts_kerala %>%
+  ggplot(aes(x=Elevation)) + #plot histogram of elevation
+  geom_histogram() +
+  facet_wrap(~Species.Name, nrow=4) + #species-wise elevational distributions
+  theme_bw()
+```
+
+---

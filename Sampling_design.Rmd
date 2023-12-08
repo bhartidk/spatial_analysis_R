@@ -1,0 +1,229 @@
+---
+title: "Sampling design"
+author: "Bharti Dharapuram"
+date: "2023-09-28"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Objectives
+
+In this tutorial we will use a polygon of Silent Valley National Park to:
+
+1. draw nested sampling grids and choose random sampling locations
+2. choose random sampling locations stratified by environmental raster
+
+We will primarily be working with the packages `sf` and `terra` to handle spatial data, use the package `dplyr` for data manipulation and `ggplot2` for visualization with a little help from `tidyterra` and `ggpubr`.
+
+# Setup
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Call the required R libraries
+
+```{r}
+library(sf)
+library(terra)
+library(dplyr)
+library(ggplot2)
+library(tidyterra)
+library(ggpubr)
+```
+
+---
+
+# 1. Input spatial data
+
+## 1.1. Protected areas of Kerala and subset data
+
+We will load the protected area list of Kerala and keep the polygon corresponding to Silent Valley National Park.
+
+```{r}
+# load shape files of protected areas of Kerala from disk
+pa<-st_read('data/kerala_pa_6Jun22/kerala_pa_6Jun22.shp')
+head(pa) #look at the organization of the data in this polygon file
+pa$pa #look at the list of names of protected areas, so that we can pull out the data we need
+```
+
+We want to keep the polygon corresponding to Silent Valley National Park from the list. Filtering the data based on the protected area name, and plotting to see the results.
+
+```{r}
+sv<-pa %>%
+  filter(pa=="Silent Valley National Park")
+head(sv)
+plot(st_geometry(sv))
+```
+
+## 1.2. Environmental variables from WorldClim - precipitation seasonality and elevation
+```{r}
+prec_seas<-terra::rast("data/wc2.1_30s_bio_15.tif")
+elev<-terra::rast("data/wc2.1_30s_elev.tif")
+```
+
+Crop the above rasters to the extent of Silent Valley National Park.
+
+```{r}
+#sv_ext<-st_bbox(sv) #obtaining the extent of the Silent Valley National Park polygon
+elev<-terra::crop(elev, sv, mask=T) #cropping the elevation raster to the Silent Valley extent
+prec_seas<-terra::crop(prec_seas, sv, mask=T) #cropping the precipitation seasonality raster to the Silent Valley extent
+```
+
+Plot the the polygon over the cropped rasters.
+
+```{r}
+elev.fill<-scale_fill_gradientn(name="Elevation (m)", colours=terrain.colors(10), na.value="transparent") #choose the fill palette for elevation data
+prec_seas.fill<-scale_fill_gradient(name="Precipitation CV", low="#f7fbff", high="#08519c", na.value="transparent") #choose the fill palette for precipitation seasonality data
+my.xscale<-scale_x_continuous(breaks=seq(76.38, 76.48, 0.05)) #define longitudinal bins
+my.yscale<-scale_y_continuous(breaks=seq(11, 11.25, 0.05)) #define latitudinal bins
+
+plt_elev<-ggplot() +
+  geom_spatraster(data=elev) + #plot raster data
+  geom_sf(data=sv, fill=NA, col="black", linewidth=0.4) + #plot the polygon corresponding to Silent Valley National Park
+  elev.fill +
+  my.xscale +
+  my.yscale +
+  theme(legend.position="bottom")
+
+plt_prec_seas<-ggplot() +
+  geom_spatraster(data=prec_seas) + #plot raster data
+  geom_sf(data=sv, fill=NA, col="black", linewidth=0.4) + #plot the polygon corresponding to Silent Valley National Park
+  prec_seas.fill +
+  my.xscale +
+  my.yscale +
+  theme(legend.position="bottom")
+
+ggarrange(plt_elev, plt_prec_seas) #arranging multiple ggplots on the same page
+```
+
+# 2. Overlay sampling grid over PA polygon and draw random sampling locations
+
+Lets create 2.5 x 2.5 km grids over Silent Valley National Park. For this, we would first need to project the polygon vector so that the unit of measurement is in distance units.
+
+```{r}
+sv_proj<-st_transform(sv, crs="EPSG:32643") #to reproject the polygon, we use the projection EPSG: 32643 corresponding to UTM zone 43 in the northern hemisphere
+
+sv_gridl<-st_make_grid(sv_proj, cellsize=c(2500, 2500)) %>%
+  st_as_sf() #create a grid using the projected polygon as input and specifying the cell size (in meters)
+
+sv_grids<-st_make_grid(sv_proj, cellsize=c(500, 500)) %>%
+  st_as_sf() #create a nested grid that is 500 x 500 m in size 
+
+#make a simple plot to view the sampling grid
+plot(st_geometry(sv_proj), col="blue")
+plot(sv_grids, add=TRUE)
+plot(sv_gridl, border="red", add=TRUE)
+
+#retaining those grids that intersect with the polygon area and converting it into an sf object
+sv_gridl<-sv_gridl %>%
+  st_filter(sv_proj, .predicates=st_intersects)
+
+sv_grids<-sv_grids %>%
+  st_filter(sv_proj, .predicates=st_intersects)
+
+st_coordinates(sv_gridl)
+
+#plotting the above objects
+plot(st_geometry(sv_proj), col="blue")
+plot(sv_grids, add=TRUE)
+plot(sv_gridl, border="red", add=TRUE)
+
+#sample random polygons from the grid
+set.seed(3432)
+l<-sample(c(1:nrow(sv_gridl)), 6) #sample random row numbers
+sv_gridl_sample<-sv_gridl[l,] #subset random rows from the sf dataframe
+sv_gridl_sample$large.id<-c(seq(1:nrow(sv_gridl_sample))) #create a column of polygon ids
+
+#plotting the selected polygons
+plot(st_geometry(sv_proj), col="blue")
+plot(sv_gridl_sample, col="grey", add=TRUE)
+plot(sv_grids, add=TRUE)
+plot(sv_gridl, border="red", add=TRUE)
+
+#shrink the larger grid cells by a little
+sv_gridl_sample2<-st_buffer(sv_gridl_sample, -100) #if we do not do this, the adjacent smaller grid cells adjacent to the large grid cell would be considered to fall within the large grid cell
+sv_grids_sample<-sv_grids %>% 
+  st_filter(sv_gridl_sample2, .predicates=st_intersects) #filter the small grid cells that fall within each of the randomly sampled larger grid cells
+sv_grids_sample$small.id<-seq(1:nrow(sv_grids_sample)) #create a column of polygon ids
+
+#join information of sampled large grids with the small grids
+sv_gridsl<-st_join(sv_grids_sample, sv_gridl_sample) #add information of the large grid cell ids to the small grid cells
+
+#sample five random grids within larger grids
+sv_gridsl_sample<-sv_gridsl %>%
+  group_by(large.id) %>%
+  slice_sample(n=5) #within a group sample random rows
+
+#obtain centroids of the selected small grid cells
+sv_sample_pts<-st_as_sf(st_centroid(st_geometry(sv_gridsl_sample)))
+
+#plot the randomly sampled plots
+plot(st_geometry(sv_proj), col="blue")
+plot(sv_gridl_sample, border="red", col="grey", add=TRUE)
+plot(st_geometry(sv_gridsl_sample), add=TRUE)
+plot(sv_sample_pts, pch=19, cex=0.75, add=TRUE)
+```
+
+Write the centroids of the chosen small polygons to disk.
+
+```{r}
+#create a directory where the output needs to be stored
+dir.create("results")
+st_write(sv_sample_pts, "results/sampling_locations.shp")
+```
+
+# 3. Select sampling locations based on stratified sampling over raster values
+
+## 3.1 Look at the distribution of elevation data
+
+Divide the raster values into quartiles and define strata based on it. Create a new raster where the group numbers are assigned as values and choose random samples based from each of the elevation strata
+
+```{r}
+elev_qtile<-values(elev) %>% #pull out the values of the raster
+  as.data.frame() %>% #convert into a dataframe so that new columns can be added
+  mutate(cell=seq(1:nrow(values(elev)))) %>% #add a new column of cell numbers corresponding to these values
+  mutate(quartile=ntile(wc2.1_30s_elev, 4)) #create quartile
+
+elev2<-elev #make a copy of the elevation raster so that values can be reassigned
+elev2[elev_qtile$cell]<-elev_qtile$quartile #based on the cell index replace elevation values with the quartile classes
+
+#quick plot to look at the reassignment of values
+par(mfrow=c(1,2))
+plot(elev)
+plot(sv, col=NA, add=TRUE)
+plot(elev2)
+plot(sv, col=NA, add=TRUE)
+```
+
+Plot the potential sampling locations drawn from the different sampling techniques.
+
+```{r}
+set.seed(2341)
+
+#sample random points from each of the quartile groups
+sampl_str<-spatSample(elev2, size=4, method="stratified", as.points=TRUE, na.rm=TRUE)
+
+#create a random selection of points for comparison
+sampl_rnd<-spatSample(elev, size=16, as.points=TRUE, na.rm=TRUE)
+
+#plot the each of these sampled locations (random and) over the raster
+par(mfrow=c(2,2))
+plot(elev, main="Random sampling: Elevation")
+plot(sv, col=NA, add=TRUE)
+points(sampl_rnd)
+
+plot(elev, main="Stratified sampling: Elevation")
+plot(sv, col=NA, add=TRUE)
+points(sampl_str)
+
+plot(elev2, main="Random sampling: Quantile classes")
+plot(sv, col=NA, add=TRUE)
+points(sampl_rnd)
+
+plot(elev2, main="Stratified sampling: Quantile classes")
+plot(sv, col=NA, add=TRUE)
+points(sampl_str)
+```
+
+---
